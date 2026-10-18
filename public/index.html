@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Registre d'appel MI-L1</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;min-height:100vh;color:#0b7a3b;background:linear-gradient(rgba(255,255,255,.55),rgba(255,255,255,.55)),linear-gradient(135deg,#a8d5a2,#e8f5e3)}
+header{background:#0b7a3b;color:#fff;text-align:center;padding:18px 10px;font-size:clamp(20px,5vw,34px);font-weight:700;text-shadow:1px 1px 3px #0006}
+main{max-width:560px;margin:24px auto;padding:0 14px}.card{background:#fff;border-radius:10px;padding:22px;box-shadow:0 4px 18px #0003}
+h2{text-align:center;text-decoration:underline;margin:0 0 18px}h3{margin:18px 0 8px}label{display:block;margin:12px 0 4px}
+input,select{width:100%;padding:10px;border:1px solid #bbb;border-radius:6px;background:#e4e4e4;font-size:16px}
+button{width:100%;margin-top:16px;padding:14px;background:#0b7a3b;color:#fff;border:0;font-size:16px;cursor:pointer;border-radius:4px}
+button.big{padding:36px 10px;background:#fff;color:#0b7a3b;font-size:22px;font-weight:700;border-radius:10px;box-shadow:0 4px 14px #0003;margin-top:0}
+button.sm{width:auto;margin:6px 6px 0 0;padding:6px 10px;font-size:13px}button.red{background:#b00020}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.err{color:#b00020;margin-top:12px;text-align:center}.msg{color:#0b7a3b;text-align:center;margin-bottom:8px}
+.item{background:#fff;border:1px solid #ccc;border-radius:8px;padding:14px;margin-bottom:10px;color:#000;font-size:15px;cursor:pointer}.item.s{cursor:default}
+video{width:100%;border-radius:8px;background:#000}.ok{width:140px;height:140px;border-radius:50%;background:#0a9d1a;margin:10px auto;position:relative}
+.ok:after{content:"";position:absolute;left:44px;top:28px;width:34px;height:68px;border:solid #fff;border-width:0 14px 14px 0;transform:rotate(40deg)}
+#qr{display:flex;justify-content:center;margin:14px 0}.t{text-align:center;font-size:22px;font-weight:700}.lnk{background:none;color:#0b7a3b;text-decoration:underline;margin-top:8px;padding:6px}.sub{text-align:center;color:#000;margin-bottom:8px}
+</style></head><body>
+<header>REGISTRE D'APPEL MI-L1</header><main><div class="card" id="c"></div></main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const $=s=>document.querySelector(s),v=id=>$('#'+id).value;let T='',UEN='',timer,stream,DL=[],AD={};
+const api=async(p,b)=>{const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json',Authorization:'Bearer '+T},body:b?JSON.stringify(b):undefined});
+const j=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(new Error(j.error||'Erreur réseau'),{j});return j};
+const stopCam=()=>{if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}};
+const show=h=>{clearInterval(timer);stopCam();$('#c').innerHTML=h};
+const err=e=>{const x=$('#e');if(x)x.textContent=e.message||e;else alert(e.message||e)};
+const f=(id,l,t='text')=>`<label>${l}</label><input id="${id}" type="${t}" autocomplete="off">`;
+const sel=(id,l,o)=>`<label>${l}</label><select id="${id}">${o.map(x=>`<option>${x}</option>`).join('')}</select>`;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const bk=(fn,t='Retour')=>`<button class="lnk" onclick="${fn}()">${t}</button>`;
+const go=fn=>async(...a)=>{try{await fn(...a)}catch(e){err(e)}};
+const lab=d=>`${d.niveau} ${d.filiere} · ${d.debut}-${d.fin}`;
+
+// ===== Accueil et étudiants =====
+const home=()=>{T='';show(`<div class="row"><button class="big" onclick="choice()">Etudiants</button><button class="big" onclick="dlogin()">Docteur</button></div>`)};
+const choice=()=>show(`<div class="row"><button class="big" onclick="reg()">Inscription</button><button class="big" onclick="login()">Connexion</button></div>${bk('home')}`);
+const reg=()=>{show(`<h2>Inscription</h2>${f('n','Nom :')}${f('p','Prénom(s) :')}${f('i','I.P :')}${f('k','Code :','password')}<button id="b">VALIDER</button><div class="err" id="e"></div>${bk('choice')}`);
+$('#b').onclick=go(async()=>{await api('register',{nom:v('n'),prenoms:v('p'),ip:v('i'),code:v('k')});login('Inscription réussie, connectez-vous.')})};
+const login=m=>{show(`<h2>Connexion</h2>${m?`<div class="msg">${m}</div>`:''}${f('i','I.P :')}${f('k','Code :','password')}<button id="b">VALIDER</button><div class="err" id="e"></div>${bk('choice')}`);
+$('#b').onclick=go(async()=>{T=(await api('login',{ip:v('i'),code:v('k')})).token;scan()})};
+const scan=()=>{show(`<h2>Scanner le QR code</h2><video id="v" playsinline muted></video><div class="err" id="e"></div>${f('m','Ou saisir le code affiché :')}<button id="b">VALIDER</button>${bk('home','Retour à l\'accueil')}`);
+let busy=false;$('#b').onclick=go(async()=>{await api('scan',{qr:v('m')});ok()});
+navigator.mediaDevices?.getUserMedia({video:{facingMode:'environment'}}).then(s=>{stream=s;const vd=$('#v');vd.srcObject=s;vd.play();const cv=document.createElement('canvas'),x=cv.getContext('2d');
+const tick=async()=>{if(!stream)return;if(vd.videoWidth&&!busy){cv.width=vd.videoWidth;cv.height=vd.videoHeight;x.drawImage(vd,0,0);const d=x.getImageData(0,0,cv.width,cv.height),q=jsQR(d.data,d.width,d.height);
+if(q){busy=true;try{await api('scan',{qr:q.data});ok();return}catch(e){err(e);setTimeout(()=>busy=false,2500)}}}requestAnimationFrame(tick)};tick()}).catch(()=>err('Caméra indisponible : saisissez le code manuellement.'))};
+const ok=()=>{show(`<h2>Présence validée</h2><div class="ok"></div>`);T='';setTimeout(home,2500)};
+
+// ===== Docteur =====
+const dlogin=()=>{show(`<h2>Connexion</h2>${f('k','Code :','password')}<button id="b">VALIDER</button><div class="err" id="e"></div>${bk('home')}`);
+$('#b').onclick=go(async()=>{const r=await api('doctor',{code:v('k')});T=r.token;UEN=r.ue||'';r.role==='adm'?amenu():dmenu()})};
+const dmenu=()=>show(`${UEN?`<div class="sub">UE : ${esc(UEN)}</div>`:''}<div class="row"><button class="big" onclick="ddate()">Faire l'appel</button><button class="big" onclick="dates()">Vérifier les présences</button></div>${bk('home','Déconnexion')}`);
+const ddate=()=>{show(`<h2>Nouvel appel</h2>${f('d','Date : JJ/MM/AAAA')}<div class="row"><div>${f('h1','Début','time')}</div><div>${f('h2','Fin','time')}</div></div><div class="row"><div>${sel('fi','Filière',['MI','PC','SN'])}</div><div>${sel('ni','Niveau',['L1','L2','L3','M1','M2'])}</div></div><button id="b">VALIDER</button><div class="err" id="e"></div>${bk('dmenu')}`);
+$('#d').value=new Date().toLocaleDateString('fr-FR');
+$('#b').onclick=go(async()=>{const o={date:v('d'),debut:v('h1'),fin:v('h2'),filiere:v('fi'),niveau:v('ni')};let r;
+try{r=await api('start',o)}catch(e){if(e.j&&e.j.exists&&confirm('Un appel identique existe déjà. En faire un nouveau ?'))r=await api('start',{...o,force:true});else throw e}qrview(r.id)})};
+const qrview=id=>{show(`<h2>Scannez ce QR code</h2><div id="qr"></div><div class="t" id="t"></div>${bk('dmenu','Retour au menu')}`);let last='';
+const poll=async()=>{try{const r=await api('qr?id='+id);if(!r.qr){dmenu();return}
+if(r.qr!==last){last=r.qr;$('#qr').innerHTML='';new QRCode($('#qr'),{text:r.qr,width:280,height:280})}
+const s=Math.ceil(r.left/1000);$('#t').textContent=Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}catch(e){}};poll();timer=setInterval(poll,1000)};
+const dates=go(async()=>{DL=await api('dates');const days=[...new Set(DL.map(d=>d.date))];
+show(`<h2>Dates des appels</h2>${days.map(d=>`<div class="item" onclick="day('${d}')">${d} (${DL.filter(x=>x.date===d).length} appel(s))</div>`).join('')||'<p>Aucun appel enregistré.</p>'}${bk('dmenu')}`)});
+const day=d=>show(`<h2>Appels du ${d}</h2>${DL.filter(x=>x.date===d).map(x=>`<div class="item" onclick="pres('${x.id}')">${lab(x)} (${x.n} présents)</div>`).join('')}${bk('dates')}`);
+const pres=go(async id=>{const r=await api('presence?id='+id);show(`<h2>Présents du ${r.date}</h2><div class="sub">${lab(r)}</div>${r.list.map(s=>`<div class="item s">IP ETUDIANT: ${esc(s.ip)} | NOM: ${esc(s.nom)} | PRENOM(S): ${esc(s.prenoms)}</div>`).join('')||'<p>Aucun présent.</p>'}<button class="lnk" onclick="day('${r.date}')">Retour</button>`)});
+
+// ===== Administration =====
+const A_=(p,b)=>api('adm/'+p,b||{});
+const aload=async()=>{AD=await A_('data')};
+const amenu=go(async()=>{await aload();show(`<h2>Administration</h2><div class="item" onclick="aetu()">Étudiants (${AD.students.length})</div><div class="item" onclick="aapp()">Appels (${AD.sessions.length})</div><div class="item" onclick="aue()">UE et codes Docteur (${AD.ues.length})</div><div class="item" onclick="acorb()">Corbeille (${AD.trash.students.length+AD.trash.sessions.length+AD.trash.ues.length})</div><div class="item" onclick="acfg()">Codes d'accès</div>${bk('home','Déconnexion')}`)});
+const aetu=go(async()=>{await aload();show(`<h2>Étudiants</h2>${AD.students.map((s,i)=>`<div class="item s">${esc(s.ip)} | ${esc(s.nom)} ${esc(s.prenoms)}<br><button class="sm" onclick="eEdit(${i})">Modifier</button><button class="sm" onclick="ePw(${i})">Mot de passe</button><button class="sm red" onclick="eDel(${i})">Supprimer</button></div>`).join('')||'<p>Aucun étudiant.</p>'}${bk('amenu')}`)});
+const eEdit=go(async i=>{const s=AD.students[i],n=prompt('Nom :',s.nom);if(n===null)return;const p=prompt('Prénom(s) :',s.prenoms);if(p===null)return;await A_('student/update',{ip:s.ip,nom:n,prenoms:p});aetu()});
+const ePw=go(async i=>{const k=prompt('Nouveau code pour '+AD.students[i].ip+' :');if(!k)return;await A_('student/update',{ip:AD.students[i].ip,code:k});alert('Code modifié.')});
+const eDel=go(async i=>{if(!confirm('Supprimer ce profil ? Il ira dans la corbeille (récupérable).'))return;await A_('student/delete',{ip:AD.students[i].ip});aetu()});
+const aapp=go(async()=>{await aload();show(`<h2>Appels</h2>${AD.sessions.map((s,i)=>`<div class="item" onclick="asess(${i})">${s.date} · ${esc(s.ue)} · ${lab(s)} (${s.n} présents)</div>`).join('')||'<p>Aucun appel.</p>'}${bk('amenu')}`)});
+const asess=i=>{const s=AD.sessions[i];show(`<h2>${s.date}</h2><div class="sub">${esc(s.ue)} · ${lab(s)}</div>${s.present.map((p,j)=>`<div class="item s">${esc(p.ip)} | ${esc(p.nom)} ${esc(p.prenoms)}<br><button class="sm red" onclick="pRem(${i},${j})">Retirer</button></div>`).join('')||'<p>Aucun présent.</p>'}<button onclick="pAdd(${i})">Ajouter un étudiant (I.P)</button><button class="red" onclick="sDel(${i})">Supprimer cet appel</button>${bk('aapp')}`)};
+const pRem=go(async(i,j)=>{await A_('presence/remove',{id:AD.sessions[i].id,ip:AD.sessions[i].present[j].ip});await aload();asess(i)});
+const pAdd=go(async i=>{const ip=prompt("I.P de l'étudiant à ajouter :");if(!ip)return;await A_('presence/add',{id:AD.sessions[i].id,ip});await aload();asess(i)});
+const sDel=go(async i=>{if(!confirm("Supprimer cet appel ? Il ira dans la corbeille."))return;await A_('session/delete',{id:AD.sessions[i].id});aapp()});
+const acorb=go(async()=>{await aload();const t=AD.trash;show(`<h2>Corbeille</h2><h3>Profils supprimés</h3>${t.students.map((s,i)=>`<div class="item s">${esc(s.ip)} | ${esc(s.nom)} ${esc(s.prenoms)}<br><button class="sm" onclick="tAct('student/restore',${i},0)">Restaurer</button><button class="sm red" onclick="tAct('student/purge',${i},0)">Supprimer définitivement</button></div>`).join('')||'<p>Aucun.</p>'}<h3>UE supprimées</h3>${t.ues.map((u,i)=>`<div class="item s">${esc(u.nom)}<br><button class="sm" onclick="tAct('ue/restore',${i},2)">Restaurer</button><button class="sm red" onclick="tAct('ue/purge',${i},2)">Supprimer définitivement</button></div>`).join('')||'<p>Aucune.</p>'}<h3>Appels supprimés</h3>${t.sessions.map((s,i)=>`<div class="item s">${s.date} · ${esc(s.ue)} · ${lab(s)} (${s.n} présents)<br><button class="sm" onclick="tAct('session/restore',${i},1)">Restaurer</button><button class="sm red" onclick="tAct('session/purge',${i},1)">Supprimer définitivement</button></div>`).join('')||'<p>Aucun.</p>'}${bk('amenu')}`)});
+const tAct=go(async(a,i,k)=>{if(a.endsWith('purge')&&!confirm('Suppression définitive : impossible à annuler. Continuer ?'))return;
+const o=[AD.trash.students,AD.trash.sessions,AD.trash.ues][k][i];await A_(a,k?{id:o.id}:{ip:o.ip});acorb()});
+const aue=go(async()=>{await aload();show(`<h2>UE et codes Docteur</h2>${AD.ues.map((u,i)=>`<div class="item s"><b>${esc(u.nom)}</b> · appel ${u.actif?'autorisé':'<span style="color:#b00020">bloqué</span>'}<br><button class="sm" onclick="uNom(${i})">Renommer</button><button class="sm" onclick="uCode(${i})">Code</button><button class="sm" onclick="uTog(${i})">${u.actif?'Bloquer':'Autoriser'} l'appel</button><button class="sm red" onclick="uDel(${i})">Supprimer</button></div>`).join('')||'<p>Aucune UE.</p>'}<button onclick="uAdd()">Ajouter une UE</button>${bk('amenu')}`)});
+const uAdd=go(async()=>{const n=prompt("Nom de l'UE :");if(!n)return;const c=prompt('Code Docteur de cette UE (6 caractères minimum) :');if(!c)return;await A_('ue/add',{nom:n,code:c});aue()});
+const uNom=go(async i=>{const n=prompt('Nouveau nom :',AD.ues[i].nom);if(!n)return;await A_('ue/update',{id:AD.ues[i].id,nom:n});aue()});
+const uCode=go(async i=>{const c=prompt('Nouveau code pour '+AD.ues[i].nom+' :');if(!c)return;await A_('ue/update',{id:AD.ues[i].id,code:c});alert('Code modifié.')});
+const uTog=go(async i=>{await A_('ue/update',{id:AD.ues[i].id,actif:!AD.ues[i].actif});aue()});
+const uDel=go(async i=>{if(!confirm('Supprimer cette UE ? Elle ira dans la corbeille.'))return;await A_('ue/delete',{id:AD.ues[i].id});aue()});
+const acfg=()=>show(`<h2>Codes d'accès</h2><button onclick="cSet('admin')">Changer le code Administrateur</button>${bk('amenu')}`);
+const cSet=go(async k=>{const c=prompt('Nouveau code (6 caractères minimum) :');if(!c)return;await A_('config',{[k]:c});alert('Code modifié.')});
+home();
+</script></body></html>
