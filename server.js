@@ -1,6 +1,6 @@
-// Registre d'appel MI-L1 - serveur (Node.js 18+, aucune dépendance)
+// Registre d'appel UNA - serveur (Node.js 18+, aucune dépendance)
 const http = require('http'), fs = require('fs'), path = require('path'), c = require('crypto');
-const PORT = process.env.PORT || 3000, DB = path.join(__dirname, 'data.json');
+const PORT = process.env.PORT || 3000, DB = process.env.DATA_FILE || path.join(__dirname, 'data.json'); // DATA_FILE : emplacement du fichier de données (disque persistant en hébergement)
 const sha = s => c.createHash('sha256').update(s).digest('hex');
 const SLOT = 15000, DUR = 180000, FIL = ['MI', 'PC', 'SN'], NIV = ['L1', 'L2', 'L3', 'M1', 'M2'];
 let db = { students: {}, sessions: {}, trash: {} };
@@ -13,6 +13,7 @@ db.cfg = db.cfg || { admin: sha(process.env.ADMIN_CODE || 'Admin-MI-L12026') };
 if (!db.ues) db.ues = { general: { nom: 'Général', code: db.cfg.doctor || sha('Univ-UNA.CI225'), actif: true } };
 delete db.cfg.doctor;
 for (const s of Object.values(db.sessions)) if (!s.ue) s.ue = 'general';
+for (const u of Object.values(db.ues)) if (u.listes === undefined) u.listes = true; // accès du Docteur aux listes par niveau
 const save = () => fs.writeFileSync(DB, JSON.stringify(db));
 save();
 const SECRET = c.randomBytes(16).toString('hex'), tokens = {}, fails = {};
@@ -28,11 +29,23 @@ const people = s => s.present.map(p => ({ ip: p.ip, nom: st(p.ip).nom, prenoms: 
 const info = (id, s) => ({ id, date: s.date, debut: s.debut, fin: s.fin, filiere: s.filiere, niveau: s.niveau, start: s.start, ue: ueName(s.ue), n: s.present.length, present: people(s) });
 const sessList = (o, ue) => Object.entries(o).filter(([, s]) => !ue || s.ue === ue).sort((a, b) => b[1].start - a[1].start).map(([id, s]) => info(id, s));
 const stuList = o => Object.entries(o).map(([ip, s]) => ({ ip, nom: s.nom, prenoms: s.prenoms })).sort((a, b) => a.nom.localeCompare(b.nom));
-const ueList = o => Object.entries(o).map(([id, u]) => ({ id, nom: u.nom, actif: u.actif })).sort((a, b) => a.nom.localeCompare(b.nom));
+const ueList = o => Object.entries(o).map(([id, u]) => ({ id, nom: u.nom, actif: u.actif, listes: u.listes !== false })).sort((a, b) => a.nom.localeCompare(b.nom));
+const PERM = () => ({ listes: true, appels: true, historique: true });
+const ORD = { attente: 0, valide: 1, refuse: 2 };
+const delegList = () => Object.entries(db.students).filter(([, s]) => s.deleg).map(([ip, s]) => ({ ip, nom: s.nom, prenoms: s.prenoms, ...s.deleg, n: Object.values(db.sessions).filter(x => x.present.some(p => p.ip === ip)).length }))
+  .sort((a, b) => ORD[a.statut] - ORD[b.statut] || a.nom.localeCompare(b.nom));
+// Délégués / sous-délégués : un compte étudiant avec une demande (deleg). Tant que l'administrateur n'a pas validé, c'est un simple étudiant.
+function dgAuth(q, r, perm) {
+  const t = who(q, 'etu'), s = t && db.students[t.ip];
+  if (!s || !s.deleg || s.deleg.statut !== 'valide') { send(r, 403, { error: 'Accès refusé.' }); return null; }
+  if (perm && !(s.deleg.perm || {})[perm]) { send(r, 403, { error: "Cette fonction est désactivée par l'administrateur." }); return null; }
+  return { ip: t.ip, d: s.deleg };
+}
+const grpSessions = d => Object.entries(db.sessions).filter(([, s]) => s.niveau === d.niveau && s.filiere === d.filiere);
 const used = h => h === db.cfg.admin || Object.values(db.ues).some(u => u.code === h);
 // Un seul écran de connexion « Docteur » : le code d'une UE ouvre son interface Docteur, le code Administrateur ouvre l'administration.
 function checkCode(q, r, code) {
-  const k = q.socket.remoteAddress, f = fails[k] || { n: 0, until: 0 };
+  const k = (q.headers['x-forwarded-for'] || '').split(',')[0].trim() || q.socket.remoteAddress, f = fails[k] || { n: 0, until: 0 };
   if (Date.now() < f.until) { send(r, 429, { error: "Trop d'essais, réessayez dans quelques minutes." }); return null; }
   const h = sha(code), ue = Object.keys(db.ues).find(i => db.ues[i].code === h), role = h === db.cfg.admin ? 'adm' : ue ? 'doc' : null;
   if (!role) { f.n++; if (f.n >= 5) { f.until = Date.now() + 300000; f.n = 0; } fails[k] = f; send(r, 401, { error: 'Code incorrect.' }); return null; }
@@ -45,7 +58,7 @@ function admin(q, r, name, b, str) {
   const a = name.slice(4), ip = str(b.ip).toUpperCase(), id = str(b.id), T = db.trash;
   const ok = () => { save(); send(r, 200, { ok: true }); };
   const bad = m => send(r, 400, { error: m });
-  if (a === 'data') return send(r, 200, { students: stuList(db.students), sessions: sessList(db.sessions), ues: ueList(db.ues), trash: { students: stuList(T.students), sessions: sessList(T.sessions), ues: ueList(T.ues) } });
+  if (a === 'data') return send(r, 200, { students: stuList(db.students), sessions: sessList(db.sessions), ues: ueList(db.ues), deleg: delegList(), trash: { students: stuList(T.students), sessions: sessList(T.sessions), ues: ueList(T.ues) } });
   if (a === 'student/update') {
     const s = db.students[ip]; if (!s) return send(r, 404, { error: 'Profil introuvable.' });
     if (str(b.nom)) s.nom = str(b.nom); if (str(b.prenoms)) s.prenoms = str(b.prenoms);
@@ -74,11 +87,37 @@ function admin(q, r, name, b, str) {
     if (s.present.some(p => p.ip === ip)) return send(r, 409, { error: 'Déjà présent.' });
     s.present.push({ ip, time: Date.now() }); return ok();
   }
+  const dgd = () => db.students[ip] && db.students[ip].deleg;
+  if (a === 'dg/validate') {
+    const d = dgd(); if (!d) return send(r, 404, { error: 'Profil introuvable.' });
+    if (!['delegue', 'sous'].includes(str(b.role))) return bad('Fonction invalide.');
+    d.statut = 'valide'; d.valide = str(b.role); d.dateValid = Date.now(); d.perm = d.perm || PERM(); return ok();
+  }
+  if (a === 'dg/refuse') { const d = dgd(); if (!d) return send(r, 404, { error: 'Profil introuvable.' }); d.statut = 'refuse'; d.valide = null; return ok(); }
+  if (a === 'dg/perm') {
+    const d = dgd(); if (!d) return send(r, 404, { error: 'Profil introuvable.' });
+    d.perm = d.perm || PERM(); const k = str(b.key), v = !!b.value;
+    if (k === 'all') d.perm = { listes: v, appels: v, historique: v }; else if (k in d.perm) d.perm[k] = v; else return bad('Accès inconnu.');
+    return ok();
+  }
+  if (a === 'dg/update') {
+    const d = dgd(); if (!d) return send(r, 404, { error: 'Profil introuvable.' });
+    if (!NIV.includes(str(b.niveau)) || !FIL.includes(str(b.filiere))) return bad('Filière ou niveau invalide.');
+    d.niveau = str(b.niveau); d.filiere = str(b.filiere); return ok();
+  }
+  if (a === 'dg/clearcode') { // supprime le code : plus de connexion possible tant qu'un nouveau code n'est pas défini
+    const s = db.students[ip]; if (!s) return send(r, 404, { error: 'Profil introuvable.' });
+    s.pw = null; for (const k in tokens) if (tokens[k].ip === ip) delete tokens[k]; return ok();
+  }
+  if (a === 'dg/purge') { // effacement définitif du profil (les présences passées restent, sous « profil inconnu »)
+    if (!db.students[ip] && !T.students[ip]) return send(r, 404, { error: 'Profil introuvable.' });
+    delete db.students[ip]; delete T.students[ip]; for (const k in tokens) if (tokens[k].ip === ip) delete tokens[k]; return ok();
+  }
   if (a === 'ue/add') {
     const nom = str(b.nom), code = str(b.code);
     if (!nom || code.length < 6) return bad('Nom obligatoire et code de 6 caractères minimum.');
     if (used(sha(code))) return bad('Ce code est déjà utilisé.');
-    db.ues[c.randomBytes(4).toString('hex')] = { nom, code: sha(code), actif: true }; return ok();
+    db.ues[c.randomBytes(4).toString('hex')] = { nom, code: sha(code), actif: true, listes: true }; return ok();
   }
   if (a === 'ue/update') {
     const u = db.ues[id]; if (!u) return send(r, 404, { error: 'UE introuvable.' });
@@ -89,6 +128,7 @@ function admin(q, r, name, b, str) {
       u.code = sha(str(b.code));
     }
     if (b.actif !== undefined) u.actif = !!b.actif;
+    if (b.listes !== undefined) u.listes = !!b.listes;
     return ok();
   }
   if (a === 'ue/delete') {
@@ -119,23 +159,25 @@ async function api(q, r, name, u) {
   if (q.method === 'POST') { let d = ''; for await (const x of q) d += x; try { b = JSON.parse(d); } catch {} }
   const str = v => String(v || '').trim();
   if (name.startsWith('adm/')) return admin(q, r, name, b, str);
-  if (name === 'register') {
+  if (name === 'register' || name === 'dg/register') {
     const ip = str(b.ip).toUpperCase(), nom = str(b.nom), prenoms = str(b.prenoms), code = str(b.code);
     if (!ip || !nom || !prenoms || !code) return send(r, 400, { error: 'Tous les champs sont obligatoires.' });
+    if (name === 'dg/register' && (!['delegue', 'sous'].includes(str(b.role)) || !NIV.includes(str(b.niveau)) || !FIL.includes(str(b.filiere)))) return send(r, 400, { error: 'Fonction, filière ou niveau invalide.' });
     if (db.students[ip]) return send(r, 409, { error: 'Cet I.P est déjà inscrit, veuillez vous connecter.' });
     if (db.trash.students[ip]) return send(r, 409, { error: "Cet I.P correspond à un compte supprimé : contactez l'administrateur." });
-    const salt = c.randomBytes(8).toString('hex');
-    db.students[ip] = { nom, prenoms, salt, pw: hashPw(code, salt) }; save();
+    const salt = c.randomBytes(8).toString('hex'), rec = { nom, prenoms, salt, pw: hashPw(code, salt) };
+    if (name === 'dg/register') rec.deleg = { role: str(b.role), niveau: str(b.niveau), filiere: str(b.filiere), statut: 'attente', valide: null, date: Date.now(), perm: PERM() };
+    db.students[ip] = rec; save();
     return send(r, 200, { ok: true });
   }
   if (name === 'login') {
     const ip = str(b.ip).toUpperCase(), s = db.students[ip];
-    if (!s || hashPw(str(b.code), s.salt) !== s.pw) return send(r, 401, { error: 'I.P ou code incorrect.' });
-    return send(r, 200, { token: newToken('etu', { ip }) });
+    if (!s || !s.pw || hashPw(str(b.code), s.salt) !== s.pw) return send(r, 401, { error: 'I.P ou code incorrect.' });
+    return send(r, 200, { token: newToken('etu', { ip }), deleg: s.deleg ? { statut: s.deleg.statut, role: s.deleg.valide || s.deleg.role } : null });
   }
   if (name === 'doctor') {
     const x = checkCode(q, r, str(b.code)); if (!x) return;
-    return send(r, 200, { token: newToken(x.role, { ue: x.ue }), role: x.role, ue: x.ue ? db.ues[x.ue].nom : null });
+    return send(r, 200, { token: newToken(x.role, { ue: x.ue }), role: x.role, ue: x.ue ? db.ues[x.ue].nom : null, listes: x.ue ? db.ues[x.ue].listes !== false : false });
   }
   if (name === 'start') {
     const d = who(q, 'doc'); if (!d || !db.ues[d.ue]) return send(r, 401, { error: 'Accès refusé.' });
@@ -169,6 +211,23 @@ async function api(q, r, name, u) {
     s.present.push({ ip: t.ip, time: Date.now() }); save();
     return send(r, 200, { ok: true });
   }
+  if (name === 'dg/me') { const x = dgAuth(q, r); if (!x) return; return send(r, 200, { role: x.d.valide, niveau: x.d.niveau, filiere: x.d.filiere, perm: x.d.perm || PERM() }); }
+  if (name === 'dg/listes') {
+    const x = dgAuth(q, r, 'listes'); if (!x) return;
+    const S = grpSessions(x.d), m = {};
+    S.forEach(([, s]) => s.present.forEach(p => { (m[p.ip] = m[p.ip] || { ip: p.ip, nom: st(p.ip).nom, prenoms: st(p.ip).prenoms, n: 0 }).n++; }));
+    return send(r, 200, { niveau: x.d.niveau, filiere: x.d.filiere, m: S.length, list: Object.values(m).sort((a, b) => a.nom.localeCompare(b.nom)) });
+  }
+  if (name === 'dg/appels') { const x = dgAuth(q, r, 'appels'); if (!x) return; return send(r, 200, grpSessions(x.d).sort((a, b) => b[1].start - a[1].start).map(([id, s]) => info(id, s))); }
+  if (name === 'dg/hist') {
+    const x = dgAuth(q, r, 'historique'); if (!x) return; const ip = str(u.searchParams.get('ip')).toUpperCase();
+    return send(r, 200, { nom: st(ip).nom, prenoms: st(ip).prenoms, ip, list: grpSessions(x.d).filter(([, s]) => s.present.some(p => p.ip === ip)).sort((a, b) => b[1].start - a[1].start).map(([id, s]) => { const { present, ...o } = info(id, s); return o; }) });
+  }
+  if (name === 'lists') { // listes par niveau : uniquement les appels de l'UE du Docteur, sauf blocage par l'administrateur
+    const d = who(q, 'doc'); if (!d || !db.ues[d.ue]) return send(r, 401, { error: 'Accès refusé.' });
+    if (db.ues[d.ue].listes === false) return send(r, 403, { error: "Cette fonction est désactivée par l'administrateur." });
+    return send(r, 200, sessList(db.sessions, d.ue));
+  }
   if (name === 'dates') { const d = who(q, 'doc'); if (!d) return send(r, 401, { error: 'Accès refusé.' }); return send(r, 200, sessList(db.sessions, d.ue).map(({ present, ...x }) => x)); }
   if (name === 'presence') {
     const d = who(q, 'doc'); if (!d) return send(r, 401, { error: 'Accès refusé.' });
@@ -181,6 +240,10 @@ async function api(q, r, name, u) {
 http.createServer((q, r) => {
   const u = new URL(q.url, 'http://x');
   if (u.pathname.startsWith('/api/')) return api(q, r, u.pathname.slice(5), u).catch(() => send(r, 500, { error: 'Erreur serveur.' }));
+  const pub = f => path.join(__dirname, 'public', f);
+  const STATIC = { '/i18n.js': 'application/javascript; charset=utf-8', '/fond.jpg': 'image/jpeg' };
+  if (STATIC[u.pathname] && fs.existsSync(pub(u.pathname.slice(1)))) { r.writeHead(200, { 'Content-Type': STATIC[u.pathname], 'Cache-Control': 'public, max-age=86400' }); return r.end(fs.readFileSync(pub(u.pathname.slice(1)))); }
+  let html = fs.readFileSync(pub('index.html'), 'utf8');
   r.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  r.end(fs.readFileSync(path.join(__dirname, 'public', 'index.html')));
-}).listen(PORT, () => console.log("Registre d'appel MI-L1 : http://localhost:" + PORT));
+  r.end(html);
+}).listen(PORT, () => console.log("Registre d'appel UNA : http://localhost:" + PORT));
