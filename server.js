@@ -21,6 +21,9 @@ const sig = (id, s) => c.createHmac('sha256', SECRET).update(id + '.' + s).diges
 const hashPw = (pw, salt) => c.scryptSync(pw, salt, 32).toString('hex');
 const send = (r, code, o) => { r.writeHead(code, { 'Content-Type': 'application/json' }); r.end(JSON.stringify(o)); };
 const who = (q, role) => { const t = tokens[(q.headers.authorization || '').slice(7)]; return t && t.role === role ? t : null; };
+// Code à 6 chiffres affiché sous le QR code (saisie manuelle) : change en même temps que le QR code.
+const short = (id, n) => String(parseInt(c.createHmac('sha256', SECRET).update('c.' + id + '.' + n).digest('hex').slice(0, 8), 16) % 1000000).padStart(6, '0');
+const codeFails = {};
 const slotOf = s => Math.floor((Date.now() - s.start) / SLOT);
 const st = ip => db.students[ip] || db.trash.students[ip] || { nom: '?', prenoms: '(profil inconnu)' };
 const ueName = id => (db.ues[id] || db.trash.ues[id] || { nom: '?' }).nom;
@@ -198,15 +201,29 @@ async function api(q, r, name, u) {
     const id = u.searchParams.get('id'), s = db.sessions[id];
     if (!s || s.ue !== d.ue) return send(r, 404, { error: 'Session inconnue.' });
     const left = ueOn(s.ue) ? s.start + DUR - Date.now() : 0, n = slotOf(s);
-    return send(r, 200, { left: Math.max(0, left), qr: left > 0 ? id + '.' + n + '.' + sig(id, n) : null });
+    return send(r, 200, { left: Math.max(0, left), qr: left > 0 ? id + '.' + n + '.' + sig(id, n) : null, code: left > 0 ? short(id, n) : null });
   }
   if (name === 'scan') {
     const t = who(q, 'etu'); if (!t) return send(r, 401, { error: 'Veuillez vous connecter.' });
     if (!db.students[t.ip]) return send(r, 401, { error: 'Compte introuvable.' });
-    const [id, n, g] = str(b.qr).split('.'), s = db.sessions[id];
-    if (!s || Date.now() > s.start + DUR || !ueOn(s.ue)) return send(r, 400, { error: "Aucune session d'appel en cours." });
-    const cur = slotOf(s), late = Date.now() - (s.start + cur * SLOT) < 3000;
-    if (!(+n === cur || (+n === cur - 1 && late)) || g !== sig(id, n)) return send(r, 400, { error: 'QR code expiré, veuillez rescanner.' });
+    const raw = str(b.qr).replace(/\s/g, '');
+    let id, s;
+    if (/^\d{6}$/.test(raw)) { // code saisi à la main (6 chiffres affichés sous le QR code)
+      const f = codeFails[t.ip] || { n: 0, until: 0 };
+      if (Date.now() < f.until) return send(r, 429, { error: "Trop d'essais, réessayez dans quelques minutes." });
+      for (const [i, x] of Object.entries(db.sessions)) {
+        if (Date.now() > x.start + DUR || !ueOn(x.ue)) continue;
+        const cur = slotOf(x), late = Date.now() - (x.start + cur * SLOT) < 3000;
+        for (const k of late ? [cur, cur - 1] : [cur]) if (short(i, k) === raw) { id = i; s = x; }
+      }
+      if (!s) { f.n++; if (f.n >= 5) { f.until = Date.now() + 60000; f.n = 0; } codeFails[t.ip] = f; return send(r, 400, { error: 'Code incorrect ou expiré, vérifiez le code affiché.' }); }
+      codeFails[t.ip] = { n: 0, until: 0 };
+    } else {
+      const [i2, n2, g] = raw.split('.'); id = i2; s = db.sessions[id];
+      if (!s || Date.now() > s.start + DUR || !ueOn(s.ue)) return send(r, 400, { error: "Aucune session d'appel en cours." });
+      const cur = slotOf(s), late = Date.now() - (s.start + cur * SLOT) < 3000;
+      if (!(+n2 === cur || (+n2 === cur - 1 && late)) || g !== sig(id, n2)) return send(r, 400, { error: 'QR code expiré, veuillez rescanner.' });
+    }
     if (s.present.some(p => p.ip === t.ip)) return send(r, 409, { error: 'Votre présence est déjà enregistrée.' });
     s.present.push({ ip: t.ip, time: Date.now() }); save();
     return send(r, 200, { ok: true });
@@ -228,6 +245,7 @@ async function api(q, r, name, u) {
     if (db.ues[d.ue].listes === false) return send(r, 403, { error: "Cette fonction est désactivée par l'administrateur." });
     return send(r, 200, sessList(db.sessions, d.ue));
   }
+  if (name === 'export') { const d = who(q, 'doc'); if (!d) return send(r, 401, { error: 'Accès refusé.' }); return send(r, 200, sessList(db.sessions, d.ue)); } // tous les appels de l'UE (avec présents), pour le téléchargement
   if (name === 'dates') { const d = who(q, 'doc'); if (!d) return send(r, 401, { error: 'Accès refusé.' }); return send(r, 200, sessList(db.sessions, d.ue).map(({ present, ...x }) => x)); }
   if (name === 'presence') {
     const d = who(q, 'doc'); if (!d) return send(r, 401, { error: 'Accès refusé.' });

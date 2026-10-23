@@ -75,3 +75,9 @@ Ouvrir uniquement les ports 80 et 443 du pare-feu (le port 3000 ne doit pas êtr
 - Après validation, le délégué voit son menu : Scanner ma présence, Listes de mon niveau, Appels de mon niveau (tous les appels de son niveau et de sa filière, toutes UE confondues), et l'historique d'un étudiant (uniquement dans son niveau).
 - L'administrateur peut bloquer, délégué par délégué : les listes, les appels, l'historique, ou tout (bouton Accès). Un accès bloqué n'apparaît plus dans le menu et est refusé par le serveur.
 - « Supprimer le code » empêche toute connexion jusqu'à ce qu'un nouveau code soit défini (Administration > Étudiants > Mot de passe). « Effacer définitivement » retire le profil de la base ; ses présences passées restent, sous « profil inconnu ».
+
+## Téléchargement des listes (CSV) et code à saisir
+- Un fichier CSV (ouvrable avec Excel, Google Sheets ou LibreOffice, sur ordinateur comme sur téléphone) se télécharge depuis : le Docteur (un appel, ou tous les appels de son UE), le délégué (un appel, tous les appels de son niveau, ou la liste des étudiants de son niveau, selon ses accès) et l'administrateur (un appel, tous les appels, liste des étudiants).
+- Le fichier est créé dans le navigateur à partir des données que la personne a le droit de voir : aucun droit supplémentaire n'est ouvert.
+- Sous le QR code, un code à 6 chiffres est affiché. Il change en même temps que le QR code (15 secondes). L'étudiant peut le taper dans « Ou saisir le code affiché ». Après 5 codes faux, la saisie est bloquée une minute.
+- Si l'hébergement efface `data.json`, téléchargez régulièrement les listes : ce sont vos sauvegardes lisibles. La vraie solution reste un disque persistant (`DATA_FILE`).
